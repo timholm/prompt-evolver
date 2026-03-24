@@ -9,20 +9,16 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-func setupTestDB(t *testing.T) (string, func()) {
+func createTestDB(t *testing.T) string {
 	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "registry.db")
 
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-db-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	dbPath := filepath.Join(tmpDir, "registry.db")
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		os.RemoveAll(tmpDir)
-		t.Fatal(err)
+		t.Fatalf("open test db: %v", err)
 	}
+	defer db.Close()
 
 	_, err = db.Exec(`
 		CREATE TABLE builds (
@@ -30,163 +26,220 @@ func setupTestDB(t *testing.T) (string, func()) {
 			repo_name TEXT NOT NULL,
 			status TEXT NOT NULL,
 			error_log TEXT,
-			created_at TEXT,
+			created_at TEXT NOT NULL,
 			duration_sec INTEGER,
-			has_tests INTEGER DEFAULT 0,
-			has_readme INTEGER DEFAULT 0,
+			has_tests INTEGER,
+			has_readme INTEGER,
 			mod_path TEXT
 		)
 	`)
 	if err != nil {
-		db.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatal(err)
+		t.Fatalf("create table: %v", err)
 	}
+
+	return dbPath
+}
+
+func insertBuild(t *testing.T, dbPath string, id, repoName, status, errorLog, createdAt string, durationSec int, hasTests, hasReadme int, modPath string) {
+	t.Helper()
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("open db for insert: %v", err)
+	}
+	defer db.Close()
 
 	_, err = db.Exec(`
-		INSERT INTO builds (id, repo_name, status, error_log, created_at, duration_sec, has_tests, has_readme, mod_path) VALUES
-		('b1', 'url-shortener', 'shipped', '', '2026-03-20T10:00:00Z', 120, 1, 1, 'github.com/timholm/url-shortener'),
-		('b2', 'log-parser', 'failed', 'no test files found', '2026-03-20T11:00:00Z', 90, 0, 1, ''),
-		('b3', 'config-tool', 'shipped', '', '2026-03-20T12:00:00Z', 150, 1, 1, 'github.com/timholm/config-tool'),
-		('b4', 'broken-api', 'failed', 'undefined: HandleRequest, build failed', '2026-03-20T13:00:00Z', 60, 0, 0, ''),
-		('b5', 'port-scanner', 'failed', '--- FAIL: TestScan (0.01s) and timed out', '2026-03-20T14:00:00Z', 300, 1, 1, 'github.com/timholm/port-scanner')
-	`)
+		INSERT INTO builds (id, repo_name, status, error_log, created_at, duration_sec, has_tests, has_readme, mod_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, repoName, status, errorLog, createdAt, durationSec, hasTests, hasReadme, modPath)
 	if err != nil {
-		db.Close()
-		os.RemoveAll(tmpDir)
-		t.Fatal(err)
+		t.Fatalf("insert build: %v", err)
 	}
+}
 
-	db.Close()
-
-	return dbPath, func() { os.RemoveAll(tmpDir) }
+func TestOpenInvalidPath(t *testing.T) {
+	_, err := Open("/nonexistent/path/registry.db")
+	if err == nil {
+		t.Error("expected error opening nonexistent database")
+	}
 }
 
 func TestOpenAndClose(t *testing.T) {
-	dbPath, cleanup := setupTestDB(t)
-	defer cleanup()
-
+	dbPath := createTestDB(t)
 	reg, err := Open(dbPath)
 	if err != nil {
-		t.Fatalf("Open failed: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if err := reg.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
+		t.Fatalf("Close: %v", err)
 	}
 }
 
-func TestOpenNonexistent(t *testing.T) {
-	_, err := Open("/nonexistent/path/db.sqlite")
-	if err == nil {
-		t.Fatal("expected error opening nonexistent db")
-	}
-}
-
-func TestAllBuilds(t *testing.T) {
-	dbPath, cleanup := setupTestDB(t)
-	defer cleanup()
-
+func TestAllBuildsEmpty(t *testing.T) {
+	dbPath := createTestDB(t)
 	reg, err := Open(dbPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
 	defer reg.Close()
 
 	builds, err := reg.AllBuilds()
 	if err != nil {
-		t.Fatalf("AllBuilds failed: %v", err)
+		t.Fatalf("AllBuilds: %v", err)
 	}
-	if len(builds) != 5 {
-		t.Errorf("expected 5 builds, got %d", len(builds))
+	if len(builds) != 0 {
+		t.Errorf("expected 0 builds, got %d", len(builds))
+	}
+}
+
+func TestAllBuildsWithData(t *testing.T) {
+	dbPath := createTestDB(t)
+	insertBuild(t, dbPath, "b1", "url-shortener", "shipped", "", "2025-01-15T10:00:00Z", 120, 1, 1, "github.com/test/url-shortener")
+	insertBuild(t, dbPath, "b2", "log-parser", "failed", "build failed: syntax error", "2025-01-16T10:00:00Z", 30, 0, 0, "")
+	insertBuild(t, dbPath, "b3", "config-merger", "shipped", "", "2025-01-17T10:00:00Z", 90, 1, 1, "github.com/test/config-merger")
+
+	reg, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reg.Close()
+
+	builds, err := reg.AllBuilds()
+	if err != nil {
+		t.Fatalf("AllBuilds: %v", err)
+	}
+	if len(builds) != 3 {
+		t.Fatalf("expected 3 builds, got %d", len(builds))
+	}
+
+	// Results ordered by created_at DESC.
+	if builds[0].ID != "b3" {
+		t.Errorf("first build ID = %q, want %q", builds[0].ID, "b3")
+	}
+	if builds[0].Status != "shipped" {
+		t.Errorf("first build status = %q, want %q", builds[0].Status, "shipped")
+	}
+	if !builds[0].HasTests {
+		t.Error("first build should have tests")
+	}
+	if !builds[0].HasReadme {
+		t.Error("first build should have readme")
+	}
+
+	failedBuild := builds[1]
+	if failedBuild.Status != "failed" {
+		t.Errorf("b2 status = %q, want %q", failedBuild.Status, "failed")
+	}
+	if failedBuild.ErrorLog != "build failed: syntax error" {
+		t.Errorf("b2 error_log = %q", failedBuild.ErrorLog)
 	}
 }
 
 func TestShippedBuilds(t *testing.T) {
-	dbPath, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbPath := createTestDB(t)
+	insertBuild(t, dbPath, "b1", "r1", "shipped", "", "2025-01-15T10:00:00Z", 60, 1, 1, "m")
+	insertBuild(t, dbPath, "b2", "r2", "failed", "err", "2025-01-16T10:00:00Z", 30, 0, 0, "")
+	insertBuild(t, dbPath, "b3", "r3", "shipped", "", "2025-01-17T10:00:00Z", 90, 1, 1, "m")
 
 	reg, err := Open(dbPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
 	defer reg.Close()
 
 	shipped, err := reg.ShippedBuilds()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ShippedBuilds: %v", err)
 	}
 	if len(shipped) != 2 {
-		t.Errorf("expected 2 shipped builds, got %d", len(shipped))
+		t.Errorf("expected 2 shipped, got %d", len(shipped))
 	}
 	for _, b := range shipped {
 		if b.Status != "shipped" {
-			t.Errorf("expected status 'shipped', got %q", b.Status)
+			t.Errorf("non-shipped build in ShippedBuilds: %s", b.Status)
 		}
 	}
 }
 
 func TestFailedBuilds(t *testing.T) {
-	dbPath, cleanup := setupTestDB(t)
-	defer cleanup()
+	dbPath := createTestDB(t)
+	insertBuild(t, dbPath, "b1", "r1", "shipped", "", "2025-01-15T10:00:00Z", 60, 1, 1, "m")
+	insertBuild(t, dbPath, "b2", "r2", "failed", "err", "2025-01-16T10:00:00Z", 30, 0, 0, "")
 
 	reg, err := Open(dbPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Open: %v", err)
 	}
 	defer reg.Close()
 
 	failed, err := reg.FailedBuilds()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("FailedBuilds: %v", err)
 	}
-	if len(failed) != 3 {
-		t.Errorf("expected 3 failed builds, got %d", len(failed))
+	if len(failed) != 1 {
+		t.Errorf("expected 1 failed, got %d", len(failed))
 	}
-	for _, b := range failed {
-		if b.Status != "failed" {
-			t.Errorf("expected status 'failed', got %q", b.Status)
-		}
-		if b.ErrorLog == "" {
-			t.Error("failed build should have an error log")
-		}
+	if failed[0].Status != "failed" {
+		t.Errorf("expected failed status, got %q", failed[0].Status)
 	}
 }
 
-func TestBuildFields(t *testing.T) {
-	dbPath, cleanup := setupTestDB(t)
-	defer cleanup()
+func TestNullableFields(t *testing.T) {
+	dbPath := createTestDB(t)
 
-	reg, err := Open(dbPath)
+	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open: %v", err)
+	}
+	_, err = db.Exec(`
+		INSERT INTO builds (id, repo_name, status, created_at)
+		VALUES ('b1', 'test-repo', 'failed', '2025-01-15T10:00:00Z')
+	`)
+	db.Close()
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	reg, errOpen := Open(dbPath)
+	if errOpen != nil {
+		t.Fatalf("Open: %v", errOpen)
 	}
 	defer reg.Close()
 
 	builds, err := reg.AllBuilds()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("AllBuilds: %v", err)
+	}
+	if len(builds) != 1 {
+		t.Fatalf("expected 1 build, got %d", len(builds))
 	}
 
-	// Find the shipped url-shortener.
-	var found bool
-	for _, b := range builds {
-		if b.RepoName == "url-shortener" {
-			found = true
-			if !b.HasTests {
-				t.Error("url-shortener should have tests")
-			}
-			if !b.HasReadme {
-				t.Error("url-shortener should have readme")
-			}
-			if b.ModPath != "github.com/timholm/url-shortener" {
-				t.Errorf("unexpected mod path: %q", b.ModPath)
-			}
-			if b.Duration.Seconds() != 120 {
-				t.Errorf("expected 120s duration, got %v", b.Duration)
-			}
-		}
+	b := builds[0]
+	if b.ErrorLog != "" {
+		t.Errorf("ErrorLog = %q, want empty", b.ErrorLog)
 	}
-	if !found {
-		t.Error("url-shortener build not found")
+	if b.HasTests {
+		t.Error("HasTests should be false for NULL")
 	}
+	if b.HasReadme {
+		t.Error("HasReadme should be false for NULL")
+	}
+	if b.ModPath != "" {
+		t.Errorf("ModPath = %q, want empty", b.ModPath)
+	}
+}
+
+func TestOpenReadOnly(t *testing.T) {
+	dbPath := createTestDB(t)
+
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Skipf("cannot set read-only permissions: %v", err)
+	}
+	defer os.Chmod(dbPath, 0o644)
+
+	reg, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open read-only: %v", err)
+	}
+	reg.Close()
 }

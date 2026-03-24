@@ -3,139 +3,168 @@ package test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestFileExists(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-fe-*")
-	if err != nil {
-		t.Fatal(err)
+func TestShipRate(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []BuildResult
+		want    float64
+	}{
+		{"empty", nil, 0},
+		{"all_shipped", []BuildResult{{Shipped: true}, {Shipped: true}}, 1.0},
+		{"none_shipped", []BuildResult{{Shipped: false}, {Shipped: false}}, 0},
+		{"half_shipped", []BuildResult{{Shipped: true}, {Shipped: false}}, 0.5},
+		{"two_thirds", []BuildResult{{Shipped: true}, {Shipped: true}, {Shipped: false}}, 2.0 / 3.0},
 	}
-	defer os.RemoveAll(tmpDir)
 
-	existing := filepath.Join(tmpDir, "exists.txt")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shipRate(tt.results)
+			if got != tt.want {
+				t.Errorf("shipRate() = %f, want %f", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileExists(t *testing.T) {
+	dir := t.TempDir()
+	existing := filepath.Join(dir, "exists.txt")
 	os.WriteFile(existing, []byte("hi"), 0o644)
 
 	if !fileExists(existing) {
-		t.Error("expected file to exist")
+		t.Error("fileExists() = false for existing file")
 	}
-	if fileExists(filepath.Join(tmpDir, "nope.txt")) {
-		t.Error("expected file to not exist")
+	if fileExists(filepath.Join(dir, "nope.txt")) {
+		t.Error("fileExists() = true for nonexistent file")
 	}
 }
 
 func TestHasTestFiles(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-htf-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	t.Run("no_files", func(t *testing.T) {
+		dir := t.TempDir()
+		if hasTestFiles(dir) {
+			t.Error("hasTestFiles() = true for empty dir")
+		}
+	})
 
-	// No test files.
-	os.WriteFile(filepath.Join(tmpDir, "main.go"), []byte("package main"), 0o644)
-	if hasTestFiles(tmpDir) {
-		t.Error("expected no test files")
-	}
+	t.Run("no_test_files", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main"), 0o644)
+		if hasTestFiles(dir) {
+			t.Error("hasTestFiles() = true with no test files")
+		}
+	})
 
-	// Add a test file.
-	os.WriteFile(filepath.Join(tmpDir, "main_test.go"), []byte("package main"), 0o644)
-	if !hasTestFiles(tmpDir) {
-		t.Error("expected test file to be found")
-	}
-}
+	t.Run("top_level_test", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "main_test.go"), []byte("package main"), 0o644)
+		if !hasTestFiles(dir) {
+			t.Error("hasTestFiles() = false with top-level test file")
+		}
+	})
 
-func TestHasTestFilesSubdir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-htfs-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	t.Run("subdirectory_test", func(t *testing.T) {
+		dir := t.TempDir()
+		subdir := filepath.Join(dir, "pkg")
+		os.MkdirAll(subdir, 0o755)
+		os.WriteFile(filepath.Join(subdir, "handler_test.go"), []byte("package pkg"), 0o644)
+		if !hasTestFiles(dir) {
+			t.Error("hasTestFiles() = false with subdirectory test file")
+		}
+	})
 
-	subDir := filepath.Join(tmpDir, "internal")
-	os.MkdirAll(subDir, 0o755)
-	os.WriteFile(filepath.Join(subDir, "foo_test.go"), []byte("package internal"), 0o644)
-
-	if !hasTestFiles(tmpDir) {
-		t.Error("expected test file in subdirectory to be found")
-	}
-}
-
-func TestShipRate(t *testing.T) {
-	results := []BuildResult{
-		{Shipped: true},
-		{Shipped: true},
-		{Shipped: false},
-	}
-
-	rate := shipRate(results)
-	if rate < 0.66 || rate > 0.67 {
-		t.Errorf("expected ~0.667 ship rate, got %f", rate)
-	}
-}
-
-func TestShipRateEmpty(t *testing.T) {
-	rate := shipRate(nil)
-	if rate != 0 {
-		t.Errorf("expected 0 for empty results, got %f", rate)
-	}
-}
-
-func TestShipRateAllShipped(t *testing.T) {
-	results := []BuildResult{
-		{Shipped: true},
-		{Shipped: true},
-	}
-	rate := shipRate(results)
-	if rate != 1.0 {
-		t.Errorf("expected 1.0, got %f", rate)
-	}
-}
-
-func TestShipRateNoneShipped(t *testing.T) {
-	results := []BuildResult{
-		{Shipped: false},
-		{Shipped: false},
-	}
-	rate := shipRate(results)
-	if rate != 0 {
-		t.Errorf("expected 0, got %f", rate)
-	}
+	t.Run("nonexistent_dir", func(t *testing.T) {
+		if hasTestFiles("/nonexistent/dir/12345") {
+			t.Error("hasTestFiles() = true for nonexistent dir")
+		}
+	})
 }
 
 func TestABResultString(t *testing.T) {
-	r := &ABResult{
+	result := &ABResult{
 		OldResults: []BuildResult{
-			{Project: "test-a", Shipped: true, CompileOK: true, HasTests: true, HasReadme: true},
+			{Project: "url-shortener", PromptSet: "old", Shipped: true, CompileOK: true, HasTests: true, HasReadme: true},
+			{Project: "log-parser", PromptSet: "old", Shipped: false, CompileOK: true, HasTests: false, HasReadme: true},
 		},
 		NewResults: []BuildResult{
-			{Project: "test-b", Shipped: true, CompileOK: true, HasTests: true, HasReadme: true},
+			{Project: "config-merger", PromptSet: "new", Shipped: true, CompileOK: true, HasTests: true, HasReadme: true},
+			{Project: "port-scanner", PromptSet: "new", Shipped: true, CompileOK: true, HasTests: true, HasReadme: true},
 		},
-		OldShipRate: 1.0,
+		OldShipRate: 0.5,
 		NewShipRate: 1.0,
+		Improved:    true,
+	}
+
+	s := result.String()
+	if !strings.Contains(s, "A/B Test Results") {
+		t.Error("result string missing header")
+	}
+	if !strings.Contains(s, "url-shortener") {
+		t.Error("result string missing old project")
+	}
+	if !strings.Contains(s, "config-merger") {
+		t.Error("result string missing new project")
+	}
+	if !strings.Contains(s, "BETTER") {
+		t.Error("result string missing BETTER verdict")
+	}
+	if !strings.Contains(s, "50.0%") {
+		t.Error("result string missing old ship rate")
+	}
+	if !strings.Contains(s, "100.0%") {
+		t.Error("result string missing new ship rate")
+	}
+}
+
+func TestABResultStringNotImproved(t *testing.T) {
+	result := &ABResult{
+		OldShipRate: 0.8,
+		NewShipRate: 0.5,
 		Improved:    false,
 	}
 
-	s := r.String()
-	if s == "" {
-		t.Error("string should not be empty")
+	s := result.String()
+	if !strings.Contains(s, "NOT better") {
+		t.Error("result string missing NOT better verdict")
 	}
 }
 
 func TestSampleProjectsNotEmpty(t *testing.T) {
+	if len(SampleProjects) == 0 {
+		t.Error("SampleProjects is empty")
+	}
 	if len(SampleProjects) < 6 {
-		t.Errorf("expected at least 6 sample projects, got %d", len(SampleProjects))
+		t.Errorf("SampleProjects has %d entries, need at least 6", len(SampleProjects))
+	}
+}
+
+func TestBuildResultFields(t *testing.T) {
+	br := BuildResult{
+		Project:      "test-project",
+		PromptSet:    "new",
+		Shipped:      true,
+		HasTests:     true,
+		HasReadme:    true,
+		CompileOK:    true,
+		ErrorSnippet: "",
+	}
+
+	if br.Project != "test-project" {
+		t.Errorf("Project = %q", br.Project)
+	}
+	if !br.Shipped {
+		t.Error("expected Shipped = true")
 	}
 }
 
 func TestTryCompileNoGoMod(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-tc-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// No go.mod = should fail.
-	if tryCompile(tmpDir) {
-		t.Error("expected compile to fail without go.mod")
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\nfunc main() {}"), 0o644)
+	if tryCompile(dir) {
+		t.Error("tryCompile() = true without go.mod")
 	}
 }

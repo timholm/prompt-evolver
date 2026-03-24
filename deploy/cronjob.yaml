@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: prompt-evolver
+  namespace: factory
+  labels:
+    app: prompt-evolver
+spec:
+  schedule: "0 3 * * 1"  # Weekly: Monday at 03:00 UTC
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels:
+            app: prompt-evolver
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: prompt-evolver
+              image: prompt-evolver:latest
+              args:
+                - analyze
+              env:
+                - name: FACTORY_DATA_DIR
+                  value: /data/factory
+                - name: FACTORY_REPO_PATH
+                  value: /repo/claude-code-factory
+                - name: CLAUDE_BINARY
+                  value: /usr/local/bin/claude
+                - name: EVOLVED_DIR
+                  value: /data/evolved
+              volumeMounts:
+                - name: factory-data
+                  mountPath: /data/factory
+                  readOnly: true
+                - name: factory-repo
+                  mountPath: /repo/claude-code-factory
+                - name: evolved
+                  mountPath: /data/evolved
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 512Mi
+          volumes:
+            - name: factory-data
+              persistentVolumeClaim:
+                claimName: factory-data-pvc
+            - name: factory-repo
+              persistentVolumeClaim:
+                claimName: factory-repo-pvc
+            - name: evolved
+              emptyDir: {}

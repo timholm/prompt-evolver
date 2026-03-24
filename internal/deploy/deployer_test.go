@@ -9,106 +9,124 @@ import (
 	"github.com/timholm/prompt-evolver/internal/evolve"
 )
 
-func TestDeployerNoEvolvedPrompts(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-deploy-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	emptyDir := filepath.Join(tmpDir, "evolved")
-	os.MkdirAll(emptyDir, 0o755)
+func TestDeployerRunNoEvolvedPrompts(t *testing.T) {
+	dir := t.TempDir()
+	evolvedDir := filepath.Join(dir, "evolved")
+	os.MkdirAll(evolvedDir, 0o755)
 
 	cfg := &config.Config{
-		FactoryRepoPath: filepath.Join(tmpDir, "factory"),
-		PromptsDir:      "prompts",
-		EvolvedDir:      emptyDir,
+		EvolvedDir: evolvedDir,
 	}
 
 	d := New(cfg)
-	err = d.Run(false)
+	err := d.Run(false)
 	if err == nil {
 		t.Error("expected error when no evolved prompts exist")
 	}
 }
 
-func TestDeployerEmptyPromptContent(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-deploy-empty-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	evolvedDir := filepath.Join(tmpDir, "evolved")
+func TestDeployerRunEmptyPromptNoForce(t *testing.T) {
+	dir := t.TempDir()
+	evolvedDir := filepath.Join(dir, "evolved")
+	repoDir := filepath.Join(dir, "repo")
 	os.MkdirAll(evolvedDir, 0o755)
+	os.MkdirAll(repoDir, 0o755)
 
-	// Write an empty .tmpl file.
-	os.WriteFile(filepath.Join(evolvedDir, "build.md.tmpl"), []byte("   "), 0o644)
+	evolve.WritePromptTemplate(evolvedDir, evolve.PromptTemplate{
+		Name:    "build.md.tmpl",
+		Content: "   ",
+	})
 
 	cfg := &config.Config{
-		FactoryRepoPath: filepath.Join(tmpDir, "factory"),
-		PromptsDir:      "prompts",
 		EvolvedDir:      evolvedDir,
+		FactoryRepoPath: repoDir,
+		PromptsDir:      "prompts",
 	}
 
 	d := New(cfg)
-	err = d.Run(false)
+	err := d.Run(false)
 	if err == nil {
-		t.Error("expected error for empty prompt content without --force")
+		t.Error("expected error for empty evolved prompt without force")
 	}
 }
 
-func TestDeployerWritesPrompts(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-deploy-write-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+func TestDeployerRunEmptyPromptWithForce(t *testing.T) {
+	dir := t.TempDir()
+	evolvedDir := filepath.Join(dir, "evolved")
+	repoDir := filepath.Join(dir, "repo")
+	os.MkdirAll(evolvedDir, 0o755)
+	os.MkdirAll(repoDir, 0o755)
 
-	// Set up evolved prompts.
-	evolvedDir := filepath.Join(tmpDir, "evolved")
 	evolve.WritePromptTemplate(evolvedDir, evolve.PromptTemplate{
 		Name:    "build.md.tmpl",
-		Content: "improved build prompt",
+		Content: "   ",
 	})
-	evolve.WritePromptTemplate(evolvedDir, evolve.PromptTemplate{
-		Name:    "seo.md.tmpl",
-		Content: "improved seo prompt",
-	})
-
-	// Set up factory repo (needs to be a git repo for commit step).
-	factoryDir := filepath.Join(tmpDir, "factory")
-	promptsDir := filepath.Join(factoryDir, "prompts")
-	os.MkdirAll(promptsDir, 0o755)
-
-	// Write original prompts for backup test.
-	os.WriteFile(filepath.Join(promptsDir, "build.md.tmpl"), []byte("original build"), 0o644)
 
 	cfg := &config.Config{
-		FactoryRepoPath: factoryDir,
-		PromptsDir:      "prompts",
 		EvolvedDir:      evolvedDir,
+		FactoryRepoPath: repoDir,
+		PromptsDir:      "prompts",
 	}
 
 	d := New(cfg)
-	// Run will fail at git commit (not a git repo), but files should be written.
+	err := d.Run(true)
+	if err == nil {
+		t.Error("expected error (git commit should fail on non-git dir)")
+	}
+}
+
+func TestDeployerCopiesFiles(t *testing.T) {
+	dir := t.TempDir()
+	evolvedDir := filepath.Join(dir, "evolved")
+	repoDir := filepath.Join(dir, "repo")
+	promptsDir := filepath.Join(repoDir, "prompts")
+	os.MkdirAll(evolvedDir, 0o755)
+	os.MkdirAll(promptsDir, 0o755)
+
+	os.WriteFile(filepath.Join(promptsDir, "build.md.tmpl"), []byte("original"), 0o644)
+
+	evolve.WritePromptTemplate(evolvedDir, evolve.PromptTemplate{
+		Name:    "build.md.tmpl",
+		Content: "evolved content with improvements",
+	})
+
+	cfg := &config.Config{
+		EvolvedDir:      evolvedDir,
+		FactoryRepoPath: repoDir,
+		PromptsDir:      "prompts",
+	}
+
+	d := New(cfg)
 	_ = d.Run(false)
 
-	// Verify the prompt was written.
 	data, err := os.ReadFile(filepath.Join(promptsDir, "build.md.tmpl"))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadFile: %v", err)
 	}
-	if string(data) != "improved build prompt" {
-		t.Errorf("expected improved content, got %q", string(data))
+	if string(data) != "evolved content with improvements" {
+		t.Errorf("deployed content = %q, want evolved content", string(data))
 	}
 
-	// Verify backup was created.
 	backup, err := os.ReadFile(filepath.Join(promptsDir, "build.md.tmpl.bak"))
 	if err != nil {
-		t.Fatal("expected backup file")
+		t.Fatalf("ReadFile backup: %v", err)
 	}
-	if string(backup) != "original build" {
-		t.Errorf("expected original content in backup, got %q", string(backup))
+	if string(backup) != "original" {
+		t.Errorf("backup content = %q, want original", string(backup))
+	}
+}
+
+func TestNewDeployer(t *testing.T) {
+	cfg := &config.Config{
+		EvolvedDir:      "/tmp/evolved",
+		FactoryRepoPath: "/tmp/repo",
+		PromptsDir:      "prompts",
+	}
+	d := New(cfg)
+	if d == nil {
+		t.Fatal("New returned nil")
+	}
+	if d.cfg != cfg {
+		t.Error("deployer cfg mismatch")
 	}
 }

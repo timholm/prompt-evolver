@@ -6,128 +6,144 @@ import (
 	"testing"
 )
 
-func TestReadWritePromptTemplates(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-tmpl-test-*")
+func TestReadPromptTemplatesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	templates, err := ReadPromptTemplates(dir)
 	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Write some templates.
-	templates := []PromptTemplate{
-		{Name: "build.md.tmpl", Content: "Build the project with tests."},
-		{Name: "seo.md.tmpl", Content: "Add README, CLAUDE.md, llms.txt."},
-		{Name: "review.md.tmpl", Content: "Review code quality and test coverage."},
-	}
-
-	for _, tmpl := range templates {
-		if err := WritePromptTemplate(tmpDir, tmpl); err != nil {
-			t.Fatalf("write %s: %v", tmpl.Name, err)
-		}
-	}
-
-	// Verify files exist.
-	for _, tmpl := range templates {
-		path := filepath.Join(tmpDir, tmpl.Name)
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("expected file %s to exist", path)
-		}
-	}
-
-	// Read them back.
-	read, err := ReadPromptTemplates(tmpDir)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-
-	if len(read) != len(templates) {
-		t.Fatalf("expected %d templates, got %d", len(templates), len(read))
-	}
-
-	// Check content matches.
-	nameToContent := make(map[string]string)
-	for _, tmpl := range read {
-		nameToContent[tmpl.Name] = tmpl.Content
-	}
-
-	for _, tmpl := range templates {
-		got, ok := nameToContent[tmpl.Name]
-		if !ok {
-			t.Errorf("missing template %s", tmpl.Name)
-			continue
-		}
-		if got != tmpl.Content {
-			t.Errorf("template %s content mismatch: got %q, want %q", tmpl.Name, got, tmpl.Content)
-		}
-	}
-}
-
-func TestReadPromptTemplatesEmptyDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-empty-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	templates, err := ReadPromptTemplates(tmpDir)
-	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadPromptTemplates: %v", err)
 	}
 	if len(templates) != 0 {
 		t.Errorf("expected 0 templates, got %d", len(templates))
 	}
 }
 
-func TestReadPromptTemplatesNonexistent(t *testing.T) {
-	_, err := ReadPromptTemplates("/nonexistent/dir")
+func TestReadPromptTemplatesNonexistentDir(t *testing.T) {
+	_, err := ReadPromptTemplates("/nonexistent/dir/12345")
 	if err == nil {
 		t.Error("expected error for nonexistent directory")
 	}
 }
 
-func TestWritePromptTemplateCreatesDir(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-mkdir-*")
+func TestReadPromptTemplatesFiltersNonTmpl(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "build.md.tmpl"), []byte("build instructions"), 0o644)
+	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("some notes"), 0o644)
+	os.WriteFile(filepath.Join(dir, "readme.md"), []byte("readme"), 0o644)
+	os.WriteFile(filepath.Join(dir, "review.md.tmpl"), []byte("review instructions"), 0o644)
+
+	templates, err := ReadPromptTemplates(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadPromptTemplates: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
-
-	deepDir := filepath.Join(tmpDir, "a", "b", "c")
-	tmpl := PromptTemplate{Name: "test.md.tmpl", Content: "test content"}
-
-	if err := WritePromptTemplate(deepDir, tmpl); err != nil {
-		t.Fatalf("write to deep dir: %v", err)
+	if len(templates) != 2 {
+		t.Fatalf("expected 2 templates, got %d", len(templates))
 	}
 
-	data, err := os.ReadFile(filepath.Join(deepDir, "test.md.tmpl"))
-	if err != nil {
-		t.Fatal(err)
+	names := map[string]bool{}
+	for _, tmpl := range templates {
+		names[tmpl.Name] = true
 	}
-	if string(data) != "test content" {
-		t.Errorf("unexpected content: %q", string(data))
+	if !names["build.md.tmpl"] {
+		t.Error("missing build.md.tmpl")
+	}
+	if !names["review.md.tmpl"] {
+		t.Error("missing review.md.tmpl")
 	}
 }
 
-func TestReadSkipsNonTmplFiles(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prompt-evolver-skip-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+func TestReadPromptTemplatesContent(t *testing.T) {
+	dir := t.TempDir()
+	content := "You are a code generation agent.\nBuild the project as specified."
+	os.WriteFile(filepath.Join(dir, "system.md.tmpl"), []byte(content), 0o644)
 
-	// Write a .tmpl and a non-.tmpl file.
-	os.WriteFile(filepath.Join(tmpDir, "build.md.tmpl"), []byte("tmpl content"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, "notes.txt"), []byte("not a template"), 0o644)
-	os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("readme"), 0o644)
-
-	templates, err := ReadPromptTemplates(tmpDir)
+	templates, err := ReadPromptTemplates(dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("ReadPromptTemplates: %v", err)
 	}
 	if len(templates) != 1 {
-		t.Errorf("expected 1 template (only .tmpl), got %d", len(templates))
+		t.Fatalf("expected 1 template, got %d", len(templates))
 	}
-	if templates[0].Name != "build.md.tmpl" {
-		t.Errorf("expected build.md.tmpl, got %s", templates[0].Name)
+	if templates[0].Content != content {
+		t.Errorf("content = %q, want %q", templates[0].Content, content)
+	}
+}
+
+func TestReadPromptTemplatesSkipsDirectories(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "subdir.tmpl"), 0o755)
+	os.WriteFile(filepath.Join(dir, "real.tmpl"), []byte("real template"), 0o644)
+
+	templates, err := ReadPromptTemplates(dir)
+	if err != nil {
+		t.Fatalf("ReadPromptTemplates: %v", err)
+	}
+	if len(templates) != 1 {
+		t.Errorf("expected 1 template, got %d", len(templates))
+	}
+}
+
+func TestWritePromptTemplate(t *testing.T) {
+	dir := t.TempDir()
+	tmpl := PromptTemplate{
+		Name:    "build.md.tmpl",
+		Content: "Build the project with tests and README.",
+	}
+
+	if err := WritePromptTemplate(dir, tmpl); err != nil {
+		t.Fatalf("WritePromptTemplate: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "build.md.tmpl"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != tmpl.Content {
+		t.Errorf("written content = %q, want %q", string(data), tmpl.Content)
+	}
+}
+
+func TestWritePromptTemplateCreatesDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "deep")
+	tmpl := PromptTemplate{Name: "test.tmpl", Content: "content"}
+
+	if err := WritePromptTemplate(dir, tmpl); err != nil {
+		t.Fatalf("WritePromptTemplate: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "test.tmpl")); err != nil {
+		t.Errorf("file not created: %v", err)
+	}
+}
+
+func TestWriteAndReadRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	templates := []PromptTemplate{
+		{Name: "build.md.tmpl", Content: "Build instructions here."},
+		{Name: "review.md.tmpl", Content: "Review checklist here."},
+	}
+
+	for _, tmpl := range templates {
+		if err := WritePromptTemplate(dir, tmpl); err != nil {
+			t.Fatalf("WritePromptTemplate(%s): %v", tmpl.Name, err)
+		}
+	}
+
+	read, err := ReadPromptTemplates(dir)
+	if err != nil {
+		t.Fatalf("ReadPromptTemplates: %v", err)
+	}
+	if len(read) != len(templates) {
+		t.Fatalf("expected %d templates, got %d", len(templates), len(read))
+	}
+
+	readMap := map[string]string{}
+	for _, tmpl := range read {
+		readMap[tmpl.Name] = tmpl.Content
+	}
+
+	for _, tmpl := range templates {
+		if readMap[tmpl.Name] != tmpl.Content {
+			t.Errorf("round-trip mismatch for %s: got %q, want %q", tmpl.Name, readMap[tmpl.Name], tmpl.Content)
+		}
 	}
 }
