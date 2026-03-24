@@ -45,7 +45,9 @@ func (r *Registry) Close() error {
 }
 
 // AllBuilds returns all builds from the registry.
+// Supports both the legacy "builds" table and the current "build_queue" table.
 func (r *Registry) AllBuilds() ([]Build, error) {
+	// Try the legacy "builds" table first.
 	rows, err := r.db.Query(`
 		SELECT id, repo_name, status, COALESCE(error_log, ''),
 		       created_at, COALESCE(duration_sec, 0),
@@ -54,11 +56,42 @@ func (r *Registry) AllBuilds() ([]Build, error) {
 		FROM builds
 		ORDER BY created_at DESC
 	`)
-	if err != nil {
-		return nil, fmt.Errorf("query builds: %w", err)
+	if err == nil {
+		defer rows.Close()
+		return scanLegacyBuilds(rows)
 	}
-	defer rows.Close()
 
+	// Fall back to "build_queue" table (current factory schema).
+	rows2, err2 := r.db.Query(`
+		SELECT CAST(id AS TEXT), name, status, COALESCE(error_log, ''),
+		       COALESCE(queued_at, ''), language
+		FROM build_queue
+		ORDER BY queued_at DESC
+	`)
+	if err2 != nil {
+		return nil, fmt.Errorf("query builds: %w (also tried legacy: %w)", err2, err)
+	}
+	defer rows2.Close()
+
+	var builds []Build
+	for rows2.Next() {
+		var b Build
+		var queuedAt, language string
+		if err := rows2.Scan(&b.ID, &b.RepoName, &b.Status, &b.ErrorLog,
+			&queuedAt, &language); err != nil {
+			return nil, fmt.Errorf("scan build_queue: %w", err)
+		}
+		b.CreatedAt, _ = time.Parse(time.RFC3339, queuedAt)
+		if b.CreatedAt.IsZero() {
+			b.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", queuedAt)
+		}
+		b.ModPath = language
+		builds = append(builds, b)
+	}
+	return builds, rows2.Err()
+}
+
+func scanLegacyBuilds(rows *sql.Rows) ([]Build, error) {
 	var builds []Build
 	for rows.Next() {
 		var b Build
@@ -77,7 +110,6 @@ func (r *Registry) AllBuilds() ([]Build, error) {
 		b.HasReadme = hasReadme == 1
 		builds = append(builds, b)
 	}
-
 	return builds, rows.Err()
 }
 
