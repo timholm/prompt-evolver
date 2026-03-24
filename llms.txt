@@ -1,0 +1,24 @@
+# prompt-evolver
+
+> Autonomous prompt evolution for claude-code-factory
+
+## What is this?
+
+prompt-evolver is a Go CLI that optimizes the prompts used by claude-code-factory (an autonomous software factory). It analyzes build outcomes (shipped vs failed), identifies failure patterns, generates improved prompts using Claude, A/B tests them, and deploys the winners.
+
+## Key commands
+
+- `prompt-evolver analyze` -- analyze build outcomes from SQLite registry
+- `prompt-evolver evolve` -- generate improved prompts via Claude
+- `prompt-evolver test` -- A/B test old vs new prompts
+- `prompt-evolver deploy` -- deploy improved prompts to factory repo
+
+## Source
+
+- Repository: https://github.com/timholm/prompt-evolver
+- Language: Go
+- License: MIT
+
+## Integration
+
+Works with claude-code-factory's SQLite build registry and prompt template system. Reads `registry.db`, writes `.md.tmpl` files.

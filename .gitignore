@@ -1,0 +1,6 @@
+prompt-evolver
+*.db
+*.bak
+/evolved/
+.prompt-evolver/
+.DS_Store
